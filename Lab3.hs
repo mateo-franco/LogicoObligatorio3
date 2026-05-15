@@ -38,16 +38,18 @@ bot = Bin (V "p") And (Neg $ V "p")
 -- Pos: retorna True si y solo si la lista es consistente, o sea no contiene un par de literales complementarios
 esConsistente :: [L] -> Bool
 esConsistente [] = True
-esConsistente ((V p):xs) = not (map (== (Neg p)) xs)
-esConsistente ((Bin l1 c l2):xs) = esConsistente l1 && esConsistente l2
+esConsistente ((V p):xs) = notElem (Neg (V p)) xs && esConsistente xs
+esConsistente ((Neg (V p)):xs) = notElem (V p) xs && esConsistente xs
+esConsistente ((Bin l1 c l2):xs) = esConsistente (l1:l2:xs)
 
 
 -- 2)
 -- Pre: recibe una interpretación dada como lista de asignaciones (no vacía y consistente) 
 -- Pos: retorna la interpretación expresada como una conjunción de literales
 int2f :: I -> L
-int2f (((V p), True):xs) = Bin p And (int2f xs)
-int2f (((V p), False):xs) = Bin (Neg (V p)) And (int2f xs)
+int2f [] = top
+int2f ((p, True):xs) = Bin (V p) And (int2f xs)
+int2f ((p, False):xs) = Bin (Neg (V p)) And (int2f xs)
 
 -- 3)
 -- Pre: recibe una fórmula f de LP
@@ -59,20 +61,20 @@ tableau f = tabAcc[f][]
       tabAcc (V v:fs) i = tabAcc fs ((V v):i)
       tabAcc (Neg (V v):fs) i = tabAcc fs ((Neg(V v)):i)
       tabAcc l@(Bin f1 Or f2:fs) i = Dis (l++i) (tabAcc(f1:fs)i) (tabAcc(f2:fs) i)
-      tabAcc l@(Bin f1 Imp f2:fs) i = Dis (l++i) (Neg(f1:fs)i) (tabAcc(f2:fs) i)
+      tabAcc l@(Bin f1 Imp f2:fs) i = Dis (l++i) (tabAcc (Neg f1:fs) i) (tabAcc (f2:fs) i)
       tabAcc l@(Bin f1 Iff f2:fs) i = Dis (l++i) (tabAcc(f1:f2:fs) i) (tabAcc(Neg f1:Neg f2:fs) i)
-      tabAcc l@(Neg(Bin f1 And f2):fs) i = Dis (i++l) (tabAcc(Neg f1:f2:fs) i) (tabAcc (f1: Neg f2:fs) i)
+      tabAcc l@(Neg(Bin f1 And f2):fs) i = Dis (i++l) (tabAcc(Neg f1:fs) i) (tabAcc (Neg f2:fs) i)
       tabAcc l@(Neg(Bin f1 Iff f2):fs) i = Dis (i++l) (tabAcc(Neg f1:f2:fs) i) (tabAcc (f1: Neg f2:fs) i)
       tabAcc l@(Bin f1 And f2:fs) i = Conj (i++l) (tabAcc (f1:f2:fs) i)
-      tabAcc l@(Neg(Bin f1 Or f2:fs)) i = Conj (i++l) (tabAcc (Neg f1: Neg f2:fs) i)
+      tabAcc l@(Neg(Bin f1 Or f2):fs) i = Conj (i++l) (tabAcc (Neg f1: Neg f2:fs) i)
       tabAcc l@(Neg( Bin f1 Imp f2):fs) i = Conj (i++l) (tabAcc (f1: Neg f2:fs) i)
-      tabAcc l@(Neg(Neg f1:fs)) i = Conj (i++l) (tabAcc (f1:fs) i)
+      tabAcc l@(Neg(Neg f1):fs) i = Conj (i++l) (tabAcc (f1:fs) i)
 
 -- 4)
 -- Pre: recibe una fórmula f de LP
 -- Pos: retorna True si y solo si f es sat
 sat :: L -> Bool
-sat f = undefined
+sat f = not (null (hojas (tableau f)))
  
  
 hojas :: Tableau -> [[L]]
@@ -88,7 +90,7 @@ faltantes f i = filter (\v -> lookup v i == Nothing) (vars f)
 
 combinaciones::[Var] -> [I]
 combinaciones [] = [[]]
-combinaciones [v:vs] = [(v,b):cs | b <- [False,True], cs <- combinaciones vs]
+combinaciones (v:vs) = [(v,b):cs | b <- [False,True], cs <- combinaciones vs]
 
 fai ::[L] -> I 
 fai [] = []
@@ -104,30 +106,29 @@ modelos :: L -> [I]
 modelos f = nub (concatMap completar (map fai (hojas(tableau f))))
 
   where 
-    completar i = map sort [cf++i | cf <- combinacion(faltantes i)]
+    completar i = map sort [cf++i | cf <- combinaciones (faltantes f i)]
 
 -- 6)
 -- Pre: recibe una fórmula f de LP
 -- Pos: retorna la clase semántica a la que pertenece f
 clasificar :: L -> Clase
-clasificar V p = Conti 
-clasificar Neg (V p) = Conti
-clasificar Bin l1 And l2
-| (clasificar l1) == Tau && (clasificar l2) == Tau = Tau
-| (clasificar l1) == Cont && (clasificar l2) == Cont = Cont
-| (clasificar l1) == Tau && (clasificar l2) != Tau = Conti
-clasificar Bin l1 Or l2
-| (clasificar l1) == Tau || (clasificar l2) == Tau = Tau
-| (clasificar l1) == Cont && (clasificar l2) == Cont = Cont
-| (clasificar l1) == Conti || (clasificar l2) != Tau = Conti
+clasificar f
+  | cantModelos == 0 = Contra
+  | cantModelos == cantInts = Tau
+  | otherwise = Conti
+  where
+    cantModelos = length (modelos f)
+    cantInts = 2 ^ length (vars f)
 
 -- 7)
 -- Pre: recibe una consecuencia
 -- Pos: retorna la consecuencia expresada como una fórmula de LP
 cons2f :: Consecuencia -> L
-cons2f ([] :|= L) = L
-cons2f (x:[] :|= L) = Bin x Imp L
-cons2f ((x:xs) :|= L) = Bin x And (cons2f (xs :|= L))
+cons2f ([] :|= l) = l
+cons2f (ps :|= l) = Bin (conj ps) Imp l
+  where
+    conj [x] = x
+    conj (x:xs) = Bin x And (conj xs)
 
 
 
@@ -135,25 +136,43 @@ cons2f ((x:xs) :|= L) = Bin x And (cons2f (xs :|= L))
 -- Pre: recibe una consecuencia
 -- Pos: retorna True si y solo si la consecuencia es válida
 valida :: Consecuencia -> Bool
-valida ([] :|= L) = False
-valida (l :|= L) = 
-
-
-todoCerrado :: [L] -> Bool
-todoCerrado [] = False
-todoCerrado []
+valida c = clasificar (cons2f c) == Tau
 
 -- 9)
 -- Pre: recibe una fórmula f de LP
 -- Pos: retorna f en FND
 fnd :: L -> L
-fnd f = undefined
+fnd f = disyuncion (map termino (modelos f))
+  where
+    termino i = conjuncion [lit (v,b) | (v,b) <- i]
+    lit (v, True) = V v
+    lit (v, False) = Neg (V v)
+
+    disyuncion [] = bot
+    disyuncion [x] = x
+    disyuncion (x:xs) = Bin x Or (disyuncion xs)
+
+    conjuncion [] = top
+    conjuncion [x] = x
+    conjuncion (x:xs) = Bin x And (conjuncion xs)
 
 -- 10)
 -- Pre: recibe una fórmula f de LP
 -- Pos: retorna f en FNC
 fnc :: L -> L
-fnc f = undefined
+fnc f = conjuncion (map clausula (modelos (Neg f)))
+  where
+    clausula i = disyuncion [lit (v,b) | (v,b) <- i]
+    lit (v, True) = Neg (V v)
+    lit (v, False) = V v
+
+    conjuncion [] = top
+    conjuncion [x] = x
+    conjuncion (x:xs) = Bin x And (conjuncion xs)
+
+    disyuncion [] = bot
+    disyuncion [x] = x
+    disyuncion (x:xs) = Bin x Or (disyuncion xs)
 
 
 ----------------------------------------------------------------------------------
